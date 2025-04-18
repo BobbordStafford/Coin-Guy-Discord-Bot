@@ -10,7 +10,7 @@ with open('config.json') as f:
 
 DB_PATH = 'db.json'
 def save_db():
-    with open(DB_PATH) as f:
+    with open(DB_PATH, 'w') as f:
         json.dump(db, f, indent=2)
 
 try:
@@ -27,7 +27,6 @@ def ensure_balance(user_id: str):
 
 def is_admin(member: discord.Member) -> bool:
     return any(str(r.id) in cfg["admin_roles"] for r in member.roles)
-
 
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
