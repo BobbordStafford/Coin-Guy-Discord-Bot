@@ -109,24 +109,33 @@ async def balance(interaction: discord.Interaction, user: discord.User | None = 
     uid = str(target.id)
     ensure_user(uid)
     bal = db["balances"][uid]
-    await interaction.response.send_message(f"{target.mention if target!=interaction.user else 'You have'} **{bal}** coins.")
+    if target == interaction.user:
+        await interaction.response.send_message(f"You have **{bal}** coins.")
+    else:
+        await interaction.response.send_message(f"{target.mention} has **{bal}** coins.")
 
 @tree.command(name="give", description="Give coins to another user", guild=guild_obj)
 @app_commands.describe(user="Recipient", amount="How many coins")
 async def give(interaction: discord.Interaction, user: discord.User, amount: int):
-    giver = str(interaction.user.id)
-    ensure_user(giver)
-    if is_jailed(giver):
-        return await interaction.response.send_message(f"🚓 You are in jail for another {jail_remaining(giver)}.", ephemeral=True)
+    giver_id = str(interaction.user.id)
+    ensure_user(giver_id)
+    if is_jailed(giver_id):
+        return await interaction.response.send_message(f"🚓 You are in jail for another {jail_remaining(giver_id)}.", ephemeral=True)
     if amount <= 0:
         return await interaction.response.send_message("Amount must be positive.", ephemeral=True)
-    recipient = str(user.id)
-    ensure_user(recipient)
-    if db["balances"][giver] < amount:
+    recipient_id = str(user.id)
+    ensure_user(recipient_id)
+    if db["balances"][giver_id] < amount:
         return await interaction.response.send_message("You don’t have enough coins.", ephemeral=True)
-    db["balances"][giver] -= amount
-    db["balances"][recipient] += amount
-    log_transaction("give", {"from": giver, "to": recipient, "amount": amount})
+    db["balances"][giver_id] -= amount
+    db["balances"][recipient_id] += amount
+    log_transaction("give", {
+        "from_id": giver_id,
+        "from_name": interaction.user.name,
+        "to_id": recipient_id,
+        "to_name": user.name,
+        "amount": amount
+    })
     await interaction.response.send_message(f"{interaction.user.mention} gave {amount} coins to {user.mention}.")
 
 BUYABLES = [app_commands.Choice(name=k, value=k) for k in PRICE_TABLE]
@@ -150,41 +159,58 @@ async def buy(interaction: discord.Interaction, item: app_commands.Choice[str], 
         db["inventories"][uid]["guns"] += quantity
     else:
         db["inventories"][uid][key] += quantity
-    log_transaction("buy", {"user": uid, "item": key, "quantity": quantity, "cost": cost})
+    log_transaction("buy", {
+        "user_id": uid,
+        "user_name": interaction.user.name,
+        "item": key,
+        "quantity": quantity,
+        "cost": cost
+    })
     await interaction.response.send_message(f"🛒 You bought {quantity} {key.replace('_',' ')}(s) for {cost} coins.")
 
 @tree.command(name="steal", description="Attempt to steal 1 coin from someone", guild=guild_obj)
 @app_commands.describe(victim="The user you want to steal from")
 async def steal(interaction: discord.Interaction, victim: discord.User):
-    attacker = str(interaction.user.id)
+    attacker_id = str(interaction.user.id)
     victim_id = str(victim.id)
-    if attacker == victim_id:
+    if attacker_id == victim_id:
         return await interaction.response.send_message("You can’t steal from yourself.", ephemeral=True)
-    ensure_user(attacker)
+    ensure_user(attacker_id)
     ensure_user(victim_id)
-    if is_jailed(attacker):
-        return await interaction.response.send_message(f"🚓 You are in jail for another {jail_remaining(attacker)}", ephemeral=True)
-    last = db["last_steal"][attacker]
+    if is_jailed(attacker_id):
+        return await interaction.response.send_message(f"🚓 You are in jail for another {jail_remaining(attacker_id)}", ephemeral=True)
+    last = db["last_steal"][attacker_id]
     if last and (now() - datetime.datetime.fromisoformat(last)).total_seconds() < 86400:
         return await interaction.response.send_message(f"⏳ You can steal again in {datetime.timedelta(seconds=int(86400 - (now()-datetime.datetime.fromisoformat(last)).total_seconds()))}.", ephemeral=True)
     if db["balances"][victim_id] < 1:
         return await interaction.response.send_message(f"{victim.mention} has no coins to steal.")
-    a_armed = is_armed(attacker)
+    a_armed = is_armed(attacker_id)
     v_armed = is_armed(victim_id)
     if a_armed:
-        consume_bullet(attacker)
+        consume_bullet(attacker_id)
     fail = 0.25 if a_armed and not v_armed else 0.75 if v_armed and not a_armed else 0.5
     success = random.random() >= fail
-    db["last_steal"][attacker] = now().isoformat()
+    db["last_steal"][attacker_id] = now().isoformat()
     if success:
         db["balances"][victim_id] -= 1
-        db["balances"][attacker] += 1
-        log_transaction("steal_success", {"from": attacker, "to": victim_id})
+        db["balances"][attacker_id] += 1
+        log_transaction("steal_success", {
+            "attacker_id": attacker_id,
+            "attacker_name": interaction.user.name,
+            "victim_id": victim_id,
+            "victim_name": victim.name
+        })
         await interaction.response.send_message(f"💰 Success! You stole 1 coin from {victim.mention}.")
     else:
         until = now() + datetime.timedelta(days=1)
-        db["jail_until"][attacker] = until.isoformat()
-        log_transaction("steal_fail", {"attacker": attacker, "victim": victim_id, "jail_until": until.isoformat()})
+        db["jail_until"][attacker_id] = until.isoformat()
+        log_transaction("steal_fail", {
+            "attacker_id": attacker_id,
+            "attacker_name": interaction.user.name,
+            "victim_id": victim_id,
+            "victim_name": victim.name,
+            "jail_until": until.isoformat()
+        })
         await interaction.response.send_message(f"🚓 You failed and got caught! You're in jail until <t:{int(until.timestamp())}:f>.")
 
 @tree.command(name="gencoins", description="Generate coins for a user (admin only)", guild=guild_obj)
@@ -197,7 +223,11 @@ async def gencoins(interaction: discord.Interaction, user: discord.User, amount:
     uid = str(user.id)
     ensure_user(uid)
     db["balances"][uid] += amount
-    log_transaction("gencoins", {"to": uid, "amount": amount})
+    log_transaction("gencoins", {
+        "to_id": uid,
+        "to_name": user.name,
+        "amount": amount
+    })
     await interaction.response.send_message(f"Generated {amount} coins for {user.mention}.")
 
 @tree.command(name="takecoins", description="Take coins from a user (admin only)", guild=guild_obj)
@@ -211,7 +241,11 @@ async def takecoins(interaction: discord.Interaction, user: discord.User, amount
     ensure_user(uid)
     taken = min(db["balances"][uid], amount)
     db["balances"][uid] -= taken
-    log_transaction("takecoins", {"from": uid, "amount": taken})
+    log_transaction("takecoins", {
+        "target_id": uid,
+        "target_name": user.name,
+        "amount": taken
+    })
     await interaction.response.send_message(f"Taken {taken} coins from {user.mention}.")
 
 @tree.command(name="setcoins", description="Set a user's balance (admin only)", guild=guild_obj)
@@ -224,7 +258,11 @@ async def setcoins(interaction: discord.Interaction, user: discord.User, amount:
     uid = str(user.id)
     ensure_user(uid)
     db["balances"][uid] = amount
-    log_transaction("setcoins", {"user": uid, "amount": amount})
+    log_transaction("setcoins", {
+        "target_id": uid,
+        "target_name": user.name,
+        "amount": amount
+    })
     await interaction.response.send_message(f"{user.mention}’s balance set to **{amount}** coins.")
 
 async def daily_reward_loop():
@@ -235,7 +273,16 @@ async def daily_reward_loop():
         await asyncio.sleep((tomorrow - now_ts).total_seconds())
         for uid in list(db["balances"]):
             db["balances"][uid] += 1
-            log_transaction("daily_reward", {"to": uid, "amount": 1})
+            try:
+                user_obj = await bot.fetch_user(int(uid))
+                name = user_obj.name
+            except:
+                name = None
+            log_transaction("daily_reward", {
+                "to_id": uid,
+                "to_name": name,
+                "amount": 1
+            })
 
 @bot.event
 async def on_ready():
